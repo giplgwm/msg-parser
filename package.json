@@ -1,0 +1,14 @@
+{
+  "name": "msg-parser",
+  "version": "1.0.0",
+  "description": "Zero-dependency browser-first parser for Outlook .msg files (CFB, MAPI properties, attachments, embedded messages, compressed RTF).",
+  "type": "module",
+  "main": "msg-parser.js",
+  "exports": "./msg-parser.js",
+  "files": ["msg-parser.js"],
+  "scripts": {
+    "test": "node test/test.js"
+  },
+  "keywords": ["msg", "outlook", "email", "cfb", "mapi", "browser"],
+  "license": "MIT"
+}

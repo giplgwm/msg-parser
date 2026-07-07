@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>msg-parser demo — Outlook .msg viewer</title>
+<style>
+  :root { color-scheme: light dark; }
+  body {
+    font: 14px/1.5 system-ui, sans-serif;
+    max-width: 900px; margin: 2rem auto; padding: 0 1rem;
+  }
+  h1 { font-size: 1.3rem; }
+  #drop {
+    border: 2px dashed #999; border-radius: 10px; padding: 3rem 1rem;
+    text-align: center; cursor: pointer; color: #777; transition: .15s;
+  }
+  #drop.over { border-color: #4a7dff; color: #4a7dff; background: rgba(74,125,255,.06); }
+  #out { margin-top: 1.5rem; }
+  .card {
+    border: 1px solid #8884; border-radius: 10px; padding: 1rem 1.2rem;
+    margin: 1rem 0;
+  }
+  .meta td { vertical-align: top; padding: .15rem .6rem .15rem 0; }
+  .meta td:first-child { color: #888; white-space: nowrap; }
+  .body-box {
+    white-space: pre-wrap; background: #8881; border-radius: 6px;
+    padding: .8rem; max-height: 300px; overflow: auto; font-size: 13px;
+  }
+  iframe.html-body { width: 100%; height: 320px; border: 1px solid #8884; border-radius: 6px; background: #fff; }
+  .att { display: inline-block; margin: .2rem .4rem .2rem 0; padding: .3rem .7rem;
+    border: 1px solid #8886; border-radius: 20px; text-decoration: none; }
+  details.props summary { cursor: pointer; color: #888; }
+  table.props-table { border-collapse: collapse; font-size: 12px; width: 100%; }
+  table.props-table td, table.props-table th {
+    border: 1px solid #8883; padding: 2px 6px; text-align: left;
+    max-width: 420px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .nested { margin-left: 1.5rem; border-left: 3px solid #4a7dff55; }
+  .err { color: #d33; }
+  .tag { font-family: ui-monospace, monospace; color: #888; }
+</style>
+</head>
+<body>
+<h1>msg-parser demo</h1>
+<p>Everything runs locally in your browser — no upload. Drop an Outlook <code>.msg</code> file below.
+   (Serve this folder with e.g. <code>python -m http.server</code>; ES modules don't load from <code>file://</code>.)</p>
+
+<div id="drop">Drop a .msg file here, or click to choose</div>
+<input type="file" id="file" accept=".msg" hidden>
+<div id="out"></div>
+
+<script type="module">
+import { parseMsg } from './msg-parser.js';
+
+const drop = document.getElementById('drop');
+const fileInput = document.getElementById('file');
+const out = document.getElementById('out');
+
+drop.addEventListener('click', () => fileInput.click());
+drop.addEventListener('dragover', (e) => { e.preventDefault(); drop.classList.add('over'); });
+drop.addEventListener('dragleave', () => drop.classList.remove('over'));
+drop.addEventListener('drop', (e) => {
+  e.preventDefault(); drop.classList.remove('over');
+  if (e.dataTransfer.files[0]) load(e.dataTransfer.files[0]);
+});
+fileInput.addEventListener('change', () => fileInput.files[0] && load(fileInput.files[0]));
+
+async function load(file) {
+  out.innerHTML = '';
+  try {
+    const msg = parseMsg(await file.arrayBuffer());
+    out.appendChild(render(msg, file.name));
+  } catch (err) {
+    out.innerHTML = `<p class="err">Failed to parse: ${esc(err.message)}</p>`;
+    console.error(err);
+  }
+}
+
+function esc(s) {
+  return String(s).replace(/[&<>"]/g, (c) =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+}
+
+function render(msg, title, nested = false) {
+  const card = document.createElement('div');
+  card.className = 'card' + (nested ? ' nested' : '');
+
+  const fmt = (r) => esc(r.name || '') + (r.email ? ` &lt;${esc(r.email)}&gt;` : '');
+  const rows = [
+    ['File', esc(title)],
+    ['Subject', esc(msg.subject ?? '')],
+    ['From', fmt(msg.from)],
+    ['To', msg.to.map(fmt).join(', ')],
+    ['Cc', msg.cc.map(fmt).join(', ')],
+    ['Bcc', msg.bcc.map(fmt).join(', ')],
+    ['Date', msg.date ? esc(msg.date.toLocaleString()) : ''],
+    ['Message-ID', esc(msg.messageId ?? '')],
+    ['Class', esc(msg.messageClass ?? '')],
+  ].filter(([, v]) => v);
+
+  card.innerHTML = `<table class="meta">${rows.map(([k, v]) =>
+    `<tr><td>${k}</td><td>${v}</td></tr>`).join('')}</table>`;
+
+  // Body: prefer HTML, fall back to plain text, then RTF source.
+  const html = msg.bodyHtml;
+  if (html) {
+    const iframe = document.createElement('iframe');
+    iframe.className = 'html-body';
+    iframe.sandbox = ''; // fully sandboxed: no scripts
+    card.appendChild(iframe);
+    iframe.srcdoc = resolveCids(html, msg.attachments);
+  } else if (msg.body) {
+    const div = document.createElement('div');
+    div.className = 'body-box';
+    div.textContent = msg.body;
+    card.appendChild(div);
+  } else if (msg.rtfBody) {
+    const div = document.createElement('div');
+    div.className = 'body-box';
+    div.textContent = msg.rtfBody;
+    card.appendChild(div);
+  }
+
+  // Attachments
+  const atts = msg.attachments.filter((a) => !a.hidden || a.innerMsg);
+  if (atts.length) {
+    const p = document.createElement('p');
+    for (const a of atts) {
+      if (a.content) {
+        const blob = new Blob([a.content], { type: a.mimeType || 'application/octet-stream' });
+        const link = document.createElement('a');
+        link.className = 'att';
+        link.href = URL.createObjectURL(blob);
+        link.download = a.fileName || 'attachment';
+        link.textContent = `📎 ${a.fileName || 'attachment'} (${fmtSize(a.content.byteLength)})`;
+        p.appendChild(link);
+      }
+      if (a.innerMsg) card.appendChild(render(a.innerMsg, a.fileName || 'embedded message', true));
+    }
+    if (p.childNodes.length) card.insertBefore(p, card.querySelector('.nested'));
+  }
+
+  // Raw property table
+  const det = document.createElement('details');
+  det.className = 'props';
+  det.innerHTML = `<summary>${msg.properties.size} raw properties</summary>`;
+  const tbl = document.createElement('table');
+  tbl.className = 'props-table';
+  tbl.innerHTML = '<tr><th>Tag</th><th>Name</th><th>Value</th></tr>';
+  for (const p of [...msg.properties.values()].sort((a, b) => a.id - b.id)) {
+    const tr = document.createElement('tr');
+    const val = p.value instanceof Uint8Array
+      ? `<${p.value.byteLength} bytes>`
+      : p.value instanceof Date ? p.value.toISOString()
+      : Array.isArray(p.value) ? JSON.stringify(p.value)
+      : String(p.value);
+    tr.innerHTML =
+      `<td class="tag">0x${p.tag.toString(16).padStart(8, '0')}</td>` +
+      `<td>${esc(p.name ?? '')}</td><td>${esc(val)}</td>`;
+    tbl.appendChild(tr);
+  }
+  det.appendChild(tbl);
+  card.appendChild(det);
+  return card;
+}
+
+/** Replace cid: image references with blob URLs from inline attachments. */
+function resolveCids(html, attachments) {
+  return html.replace(/(["'])cid:([^"']+)\1/gi, (m, q, cid) => {
+    const a = attachments.find((x) =>
+      x.contentId && x.contentId.replace(/[<>]/g, '') === cid);
+    if (!a || !a.content) return m;
+    const blob = new Blob([a.content], { type: a.mimeType || 'image/png' });
+    return q + URL.createObjectURL(blob) + q;
+  });
+}
+
+function fmtSize(n) {
+  if (n < 1024) return n + ' B';
+  if (n < 1048576) return (n / 1024).toFixed(1) + ' KB';
+  return (n / 1048576).toFixed(1) + ' MB';
+}
+</script>
+</body>
+</html>
